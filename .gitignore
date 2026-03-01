@@ -1,0 +1,51 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+
+# IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+gen/
+
+# Flutter/Dart/Pub
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+/build/
+**/ios/.symlinks/
+**/ios/Flutter/App.framework
+**/ios/Flutter/engine
+**/ios/Flutter/flutter_assets
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/Runner.xcworkspace
+**/ios/Pods/
+**/ios/Podfile.lock
+**/ios/.generated/
+**/android/key.properties
+**/android/local.properties
+**/android/.gradle/
+**/android/app/build/
+**/android/app/release/
+**/android/app/profile/
+**/android/app/debug/
+
+# IDE-specific
+.project
+.vscode/
+
+# Ignore web builds
+/build/web/
+
+# Generated files
+lib/firebase_options.dart
