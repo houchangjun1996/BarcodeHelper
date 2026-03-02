@@ -1,16 +1,16 @@
 # myapp
 
-A new Flutter project.
+A Flutter project.
+
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+设计目的
 
-A few resources to get you started if this is your first Flutter project:
+在生产流水线上，包装盒的条形码可能因印刷错误导致无法扫描，造成后续物流或销售问题。目前缺乏低成本、灵活的临时检测工具。
+这款Android App，利用手机摄像头实时检测流水线上的条形码，并与标准条码比对，发现错误时立即报警并记录，帮助质检员快速挑出瑕疵品。
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+用户场景
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+质检员将手机固定在支架上，对准流水线，启动App开始检测。
+流水线以一定速度通过包装盒，App自动识别条码并与预录入条形码比对。当识别到错误条码时，手机发出警报，质检员取出瑕疵品。
