@@ -1,18 +1,22 @@
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:camera/camera.dart';
+import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 
 // --- Main Entry Point ---
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final cameras = await availableCameras();
+  final firstCamera = cameras.first;
   final prefs = await SharedPreferences.getInstance();
   runApp(
     ChangeNotifierProvider(
-      create: (context) => InspectionProvider(prefs),
+      create: (context) => InspectionProvider(prefs, firstCamera),
       child: const BarcodeScannerApp(),
     ),
   );
@@ -21,70 +25,97 @@ void main() async {
 // --- App State Management (Provider) ---
 class InspectionProvider with ChangeNotifier {
   final SharedPreferences _prefs;
+  final CameraDescription _cameraDescription;
 
   // --- State Variables ---
   String _benchmarkCode = "WAITING...";
   int _okCount = 0;
   int _ngCount = 0;
   bool _isAlarming = false;
-  bool _isScanning = true;
-  MobileScannerController cameraController = MobileScannerController();
+  bool _isCameraInitialized = false;
+  int _captureInterval = 500; // Default capture interval in milliseconds
 
-  // --- De-duplication Logic ---
-  String? _lastScannedCode;
-  DateTime? _lastScannedTime;
+  CameraController? cameraController;
+  Timer? _captureTimer;
+  final BarcodeScanner _barcodeScanner = BarcodeScanner();
 
   // --- Alarm System ---
   final AudioPlayer _audioPlayer = AudioPlayer();
-  Timer? _alarmFlashTimer;
 
   // --- Getters ---
   String get benchmarkCode => _benchmarkCode;
   int get okCount => _okCount;
   int get ngCount => _ngCount;
   bool get isAlarming => _isAlarming;
-  bool get isScanning => _isScanning;
+  bool get isCameraInitialized => _isCameraInitialized;
+  int get captureInterval => _captureInterval;
+  bool get isCapturing => _captureTimer?.isActive ?? false;
 
   // --- Constructor ---
-  InspectionProvider(this._prefs) {
+  InspectionProvider(this._prefs, this._cameraDescription) {
     _loadData();
+    _initializeCamera();
     _audioPlayer.setReleaseMode(ReleaseMode.loop);
   }
 
-  // --- Data Persistence ---
-  Future<void> _loadData() async {
-    _benchmarkCode = _prefs.getString('benchmarkCode') ?? 'SET-BENCHMARK';
-    _okCount = _prefs.getInt('okCount') ?? 0;
-    _ngCount = _prefs.getInt('ngCount') ?? 0;
+  // --- Camera & Scanning Logic ---
+  Future<void> _initializeCamera() async {
+    cameraController = CameraController(
+      _cameraDescription,
+      ResolutionPreset.medium, // Use medium resolution for faster processing
+      enableAudio: false,
+    );
+    try {
+      await cameraController!.initialize();
+      // Attempt to set the lowest possible exposure time for motion blur reduction
+      await cameraController!.setExposureMode(ExposureMode.auto);
+      _isCameraInitialized = true;
+      startCapturing(); // Start capturing by default
+    } catch (e) {
+      // Handle camera initialization error
+      print("Camera initialization failed: $e");
+    }
     notifyListeners();
   }
 
-  Future<void> _saveData() async {
-    await _prefs.setString('benchmarkCode', _benchmarkCode);
-    await _prefs.setInt('okCount', _okCount);
-    await _prefs.setInt('ngCount', _ngCount);
+  void startCapturing() {
+    if (isCapturing || !_isCameraInitialized) return;
+    _captureTimer = Timer.periodic(Duration(milliseconds: _captureInterval), (_) {
+      _captureAndProcessImage();
+    });
+    notifyListeners();
   }
 
-  // --- Core Logic ---
-  void onBarcodeDetected(BarcodeCapture capture) {
-    if (!_isScanning || _isAlarming) return;
+  void stopCapturing() {
+    _captureTimer?.cancel();
+    notifyListeners();
+  }
 
-    final String? code = capture.barcodes.first.rawValue;
-    if (code == null) return;
-
-    final now = DateTime.now();
-
-    // De-duplication logic
-    if (code == _lastScannedCode &&
-        _lastScannedTime != null &&
-        now.difference(_lastScannedTime!) < const Duration(milliseconds: 300)) {
-      return; // Ignore same code within 300ms
+  Future<void> _captureAndProcessImage() async {
+    if (cameraController == null || !cameraController!.value.isInitialized || cameraController!.value.isTakingPicture) {
+      return;
     }
 
-    _lastScannedCode = code;
-    _lastScannedTime = now;
+    try {
+      final XFile imageFile = await cameraController!.takePicture();
+      final inputImage = InputImage.fromFilePath(imageFile.path);
+      
+      final List<Barcode> barcodes = await _barcodeScanner.processImage(inputImage);
 
-    // Comparison logic
+      for (final barcode in barcodes) {
+        if (barcode.rawValue != null) {
+          _processBarcode(barcode.rawValue!);
+          break; // Process the first valid barcode found
+        }
+      }
+    } catch (e) {
+      print("Error capturing or processing image: $e");
+    }
+  }
+
+  void _processBarcode(String code) {
+    if (_isAlarming) return;
+
     if (code == _benchmarkCode) {
       _okCount++;
     } else {
@@ -95,17 +126,43 @@ class InspectionProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  void updateCaptureInterval(int newInterval) {
+    if (newInterval > 0) {
+      _captureInterval = newInterval;
+      if (isCapturing) {
+        // Restart timer with new interval
+        stopCapturing();
+        startCapturing();
+      }
+      _prefs.setInt('captureInterval', _captureInterval);
+      notifyListeners();
+    }
+  }
+
+  // --- Data, Alarm, and Lifecycle Management ---
+  Future<void> _loadData() async {
+    _benchmarkCode = _prefs.getString('benchmarkCode') ?? 'SET-BENCHMARK';
+    _okCount = _prefs.getInt('okCount') ?? 0;
+    _ngCount = _prefs.getInt('ngCount') ?? 0;
+    _captureInterval = _prefs.getInt('captureInterval') ?? 500;
+    notifyListeners();
+  }
+
+  Future<void> _saveData() async {
+    await _prefs.setString('benchmarkCode', _benchmarkCode);
+    await _prefs.setInt('okCount', _okCount);
+    await _prefs.setInt('ngCount', _ngCount);
+  }
+
   void _triggerAlarm() {
     _isAlarming = true;
     _playAlarmSound();
-    _startAlarmFlash();
     notifyListeners();
   }
 
   void stopAlarm() {
     _isAlarming = false;
     _stopAlarmSound();
-    _stopAlarmFlash();
     notifyListeners();
   }
 
@@ -124,17 +181,6 @@ class InspectionProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleScanning() {
-    _isScanning = !_isScanning;
-    if (_isScanning) {
-      cameraController.start();
-    } else {
-      cameraController.stop();
-    }
-    notifyListeners();
-  }
-
-  // --- Alarm Helpers ---
   Future<void> _playAlarmSound() async {
     await _audioPlayer.play(AssetSource('audio/alarm.mp3'));
   }
@@ -143,23 +189,12 @@ class InspectionProvider with ChangeNotifier {
     _audioPlayer.stop();
   }
 
-  void _startAlarmFlash() {
-    _alarmFlashTimer?.cancel();
-    _alarmFlashTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
-      // This state change will be picked up by the UI to flash the background
-      notifyListeners();
-    });
-  }
-
-  void _stopAlarmFlash() {
-    _alarmFlashTimer?.cancel();
-  }
-
   @override
   void dispose() {
-    _alarmFlashTimer?.cancel();
+    stopCapturing();
+    cameraController?.dispose();
+    _barcodeScanner.close();
     _audioPlayer.dispose();
-    cameraController.dispose();
     super.dispose();
   }
 }
@@ -193,18 +228,17 @@ class InspectionScreen extends StatefulWidget {
   State<InspectionScreen> createState() => _InspectionScreenState();
 }
 
-class _InspectionScreenState extends State<InspectionScreen> {
-  final TextEditingController _benchmarkController = TextEditingController();
-  bool _isFlashing = false;
+class _InspectionScreenState extends State<InspectionScreen> with WidgetsBindingObserver {
   Timer? _flashTimer;
+  bool _isFlashing = false;
 
   @override
   void initState() {
     super.initState();
-    // A local timer to handle the visual flash effect without rebuilding the whole widget tree
-    _flashTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+    WidgetsBinding.instance.addObserver(this);
+    _flashTimer = Timer.periodic(const Duration(milliseconds: 300), (timer) {
       final provider = context.read<InspectionProvider>();
-      if (provider.isAlarming) {
+      if(provider.isAlarming && mounted){
         setState(() {
           _isFlashing = !_isFlashing;
         });
@@ -218,11 +252,23 @@ class _InspectionScreenState extends State<InspectionScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _flashTimer?.cancel();
-    _benchmarkController.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final provider = context.read<InspectionProvider>();
+    if (!provider.isCameraInitialized) return;
+
+    if (state == AppLifecycleState.inactive) {
+      provider.cameraController?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      provider._initializeCamera();
+    }
+  }
+  
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<InspectionProvider>();
@@ -230,29 +276,84 @@ class _InspectionScreenState extends State<InspectionScreen> {
     return Scaffold(
       backgroundColor: _isFlashing ? Colors.red.shade700 : Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        title: const Text('流水线条码质检'),
+        title: const Text('流水线条码质检 (v1.2)'),
         centerTitle: true,
         backgroundColor: Colors.black26,
       ),
       body: Column(
         children: [
-          // --- Benchmark Code Display ---
           _buildBenchmarkBar(context, provider),
-          
-          // --- Camera Preview ---
           Expanded(
             flex: 3,
             child: _buildCameraView(provider),
           ),
-          
-          // --- Statistics Display ---
           _buildStatsPanel(provider),
-          
-          // --- Control Panel ---
-          if (!provider.isAlarming) _buildControlPanel(context, provider),
-          
-          // --- Stop Alarm Button ---
+           if (!provider.isAlarming) _buildControlPanel(context, provider),
           if (provider.isAlarming) _buildStopAlarmButton(provider),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildCameraView(InspectionProvider provider) {
+    if (!provider.isCameraInitialized || provider.cameraController == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: provider.isCapturing ? Colors.green : Colors.grey,
+          width: 2,
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          children: [
+            CameraPreview(provider.cameraController!),
+            if (!provider.isCapturing)
+              Container(
+                color: Colors.black.withOpacity(0.5),
+                child: const Center(
+                  child: Text('拍摄已暂停', style: TextStyle(fontSize: 24, color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildControlPanel(BuildContext context, InspectionProvider provider) {
+    return Padding(
+      padding: const EdgeInsets.all(8.0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        alignment: WrapAlignment.center,
+        children: [
+           ElevatedButton.icon(
+            onPressed: () => _showIntervalDialog(context, provider),
+            icon: const Icon(Icons.timer_outlined),
+            label: Text('${provider.captureInterval} ms'),
+          ),
+          ElevatedButton.icon(
+            onPressed: provider.resetCounts,
+            icon: const Icon(Icons.refresh),
+            label: const Text('重置'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800, foregroundColor: Colors.white),
+          ),
+          ElevatedButton.icon(
+            onPressed: provider.isCapturing ? provider.stopCapturing : provider.startCapturing,
+            icon: Icon(provider.isCapturing ? Icons.stop_circle_outlined : Icons.play_circle_outline),
+            label: Text(provider.isCapturing ? '停止' : '开始'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: provider.isCapturing ? Colors.grey.shade700 : Colors.green.shade700,
+              foregroundColor: Colors.white,
+            ),
+          ),
         ],
       ),
     );
@@ -286,48 +387,7 @@ class _InspectionScreenState extends State<InspectionScreen> {
       ),
     );
   }
-
-  Widget _buildCameraView(InspectionProvider provider) {
-    return Container(
-      margin: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: provider.isScanning ? Colors.green : Colors.grey,
-          width: 2,
-        ),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Stack(
-          children: [
-            MobileScanner(
-              controller: provider.cameraController,
-              onDetect: provider.onBarcodeDetected,
-            ),
-            Center(
-              child: Container(
-                width: MediaQuery.of(context).size.width * 0.8,
-                height: 120,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.red, width: 2.0),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-            if (!provider.isScanning)
-              Container(
-                color: Colors.black.withAlpha((255 * 0.5).round()),
-                child: const Center(
-                  child: Text('扫描已暂停', style: TextStyle(fontSize: 24, color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
+  
   Widget _buildStatsPanel(InspectionProvider provider) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -358,39 +418,6 @@ class _InspectionScreenState extends State<InspectionScreen> {
     );
   }
 
-  Widget _buildControlPanel(BuildContext context, InspectionProvider provider) {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        alignment: WrapAlignment.center,
-        children: [
-          ElevatedButton.icon(
-            onPressed: provider.resetCounts,
-            icon: const Icon(Icons.refresh),
-            label: const Text('重置计数'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800, foregroundColor: Colors.white),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => _showBenchmarkDialog(context, provider),
-            icon: const Icon(Icons.input),
-            label: const Text('手动输入'),
-          ),
-          ElevatedButton.icon(
-            onPressed: provider.toggleScanning,
-            icon: Icon(provider.isScanning ? Icons.stop_circle_outlined : Icons.play_circle_outline),
-            label: Text(provider.isScanning ? '停止' : '开始'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: provider.isScanning ? Colors.grey.shade700 : Colors.green.shade700,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildStopAlarmButton(InspectionProvider provider) {
     return Container(
       width: double.infinity,
@@ -416,32 +443,64 @@ class _InspectionScreenState extends State<InspectionScreen> {
   }
 
   Future<void> _showBenchmarkDialog(BuildContext context, InspectionProvider provider) {
-    _benchmarkController.text = provider.benchmarkCode;
+    final controller = TextEditingController(text: provider.benchmarkCode);
     return showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           title: const Text('设置基准码'),
           content: TextField(
-            controller: _benchmarkController,
+            controller: controller,
             autofocus: true,
-            decoration: const InputDecoration(
-              labelText: '输入或扫描基准条码',
-              border: OutlineInputBorder(),
-            ),
+            decoration: const InputDecoration(labelText: '输入或扫描基准条码'),
             onSubmitted: (value) {
               provider.updateBenchmarkCode(value);
               Navigator.of(context).pop();
             },
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('取消'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
             FilledButton(
               onPressed: () {
-                provider.updateBenchmarkCode(_benchmarkController.text);
+                provider.updateBenchmarkCode(controller.text);
+                Navigator.of(context).pop();
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showIntervalDialog(BuildContext context, InspectionProvider provider) {
+    final controller = TextEditingController(text: provider.captureInterval.toString());
+    return showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('设置拍照间隔 (ms)'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: '毫秒'),
+            onSubmitted: (value) {
+              final newInterval = int.tryParse(value);
+              if (newInterval != null) {
+                provider.updateCaptureInterval(newInterval);
+              }
+              Navigator.of(context).pop();
+            },
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
+            FilledButton(
+              onPressed: () {
+                 final newInterval = int.tryParse(controller.text);
+                if (newInterval != null) {
+                  provider.updateCaptureInterval(newInterval);
+                }
                 Navigator.of(context).pop();
               },
               child: const Text('确定'),

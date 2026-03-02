@@ -1,40 +1,91 @@
-# 流水线条形码质检 App - 蓝图
+# Blueprint: Barcode Inspector v1.2
 
-## 1. 应用概述
+## 1. Overview
 
-这是一个基于 Flutter 的高质量、高性能的条形码质检应用。它通过手机摄像头实时扫描流水线上的条形码，与预设的“基准码”进行比对，并对不一致的产品进行实时声光报警，同时记录合格品（OK）与不合格品（NG）的数量。
+**Barcode Inspector** is a Flutter application designed for quality control on a production line. It validates barcodes on moving items against a set benchmark, counts successful (OK) and failed (NG) scans, and triggers an alarm for non-matching barcodes.
 
-## 2. 核心功能
+This version (**v1.2**) implements a **"Timed Capture + Offline Recognition"** system, which is robust for high-speed conveyor belts and offers precise control over the scanning frequency.
 
-- **相机扫描**: 集成高性能 `mobile_scanner` 插件，实现快速、无掉帧的条形码识别。
-- **状态管理**: 使用 `provider` 进行全局状态管理，响应式地更新 UI，管理相机、报警、计数等状态。
-- **防抖/防重**: 内置逻辑，在 300ms 内忽略对同一条码的重复扫描，避免误触。
-- **声光报警**: 当扫描到不匹配的条形码（NG品）时，触发高频红色背景闪烁和持续的蜂鸣声报警。
-- **手动控制**: 提供“停止报警”、“重置计数”、“手动输入基准码”和“启停扫描”等核心控制功能。
-- **数据持久化**: 使用 `shared_preferences` 在 App 关闭后依然保存基准码和 OK/NG 计数。
-- **现代化 UI**: 遵循 Material 3 设计规范，界面清晰、操作直观、美观。
+---
 
-## 3. 技术栈和依赖
+## 2. Core Features & Architecture
 
-- **核心框架**: Flutter
-- **相机扫描**: `mobile_scanner`
-- **状态管理**: `provider`
-- **数据持久化**: `shared_preferences`
-- **音频播放**: `audioplayers` (用于报警声)
-- **字体**: `google_fonts` (提升视觉效果)
+### Architecture: Timed Capture + Offline Recognition
 
-## 4. 权限配置
+- **State Management**: `provider` (via `ChangeNotifier`)
+- **Camera Control**: `camera` package for low-level camera access and image capture.
+- **Barcode Recognition**: `google_mlkit_barcode_scanning` for offline barcode analysis from captured images.
 
-- **Android**: 需要在 `AndroidManifest.xml` 中添加相机权限。
-- **iOS**: 需要在 `Info.plist` 中添加相机使用描述。
+### Key Components:
 
-## 5. 当前开发计划
+- **`InspectionProvider`**: The core state management class.
+  - Manages `CameraController` to interface with the device camera.
+  - Runs a periodic `Timer` that triggers `takePicture()` at a user-defined interval.
+  - On picture taken, it creates an `InputImage` and passes it to the `BarcodeScanner` from the ML Kit plugin.
+  - Processes the recognition results, updates `OK`/`NG` counts, and manages the alarm state.
+  - Handles data persistence using `shared_preferences`.
 
-1.  **环境搭建**: 添加所有必要的 `pubspec.yaml` 依赖项。
-2.  **资源配置**: 创建 `assets` 文件夹用于存放报警音效，并更新 `pubspec.yaml`。
-3.  **权限设置**: 修改 `AndroidManifest.xml` 并提供 `Info.plist` 的配置说明。
-4.  **代码实现**: 编写完整的 `lib/main.dart` 文件，包含以下模块：
-    - `InspectionProvider`: 用于管理所有业务逻辑和状态的 `ChangeNotifier`。
-    - `InspectionScreen`: 主界面，包含相机预览、统计数据、控制按钮等所有 UI 元素。
-    - `main()`: 初始化 Provider 和应用。
-5.  **最终交付**: 提供完整的 `main.dart` 代码和 `pubspec.yaml` 依赖列表。
+- **`InspectionScreen`**: The main UI.
+  - Displays the `CameraPreview`.
+  - Shows the benchmark code, OK/NG statistics, and control buttons.
+  - Provides a dialog to **set the capture interval in milliseconds**.
+  - Implements `WidgetsBindingObserver` to correctly handle the app's lifecycle (pausing/resuming the camera).
+
+### Data Flow:
+
+1.  **User sets a benchmark code and a capture interval (e.g., 200ms).**
+2.  **User presses "Start Capturing".**
+3.  A `Timer` starts, firing every 200ms.
+4.  **On each tick:**
+    - `cameraController.takePicture()` is called.
+    - The resulting image (`XFile`) is held in RAM.
+    - An `InputImage` is created from the file path.
+    - `barcodeScanner.processImage()` analyzes the image.
+    - The `XFile` and `InputImage` are implicitly garbage-collected after the analysis.
+5.  **If a barcode is found:**
+    - It's compared against the benchmark.
+    - `OK` or `NG` count is incremented.
+    - An alarm is triggered on NG.
+6.  **User presses "Stop Capturing" to pause the timer.**
+
+---
+
+## 3. Style and Design
+
+- **Theme**: Material 3 (Dark Mode).
+- **Font**: `GoogleFonts.robotoMono` for a technical, monospaced look suitable for data display.
+- **Color Scheme**:
+  - **Primary**: `Colors.lightBlue` for accents and highlights.
+  - **Success**: `Colors.green` for "OK" stats and active scanning indicators.
+  - **Failure/Alarm**: `Colors.red` for "NG" stats and the flashing alarm background.
+- **Layout**:
+  - A clear top app bar.
+  - A dedicated bar to display and edit the benchmark code.
+  - A large, central area for the camera preview.
+  - A stats panel with large, easy-to-read "OK" and "NG" cards.
+  - A control panel with clearly labeled buttons for primary actions (Start/Stop, Reset, Set Interval).
+  - A prominent "Stop Alarm" button that replaces the control panel during an alarm state.
+- **Feedback**: 
+  - **Visual**: The screen flashes red during an alarm.
+  - **Audio**: An alarm sound (`alarm.mp3`) plays on loop during an alarm.
+
+---
+
+## 4. Current Task: Implement Timed Capture (v1.2)
+
+**Plan:**
+
+1.  **[DONE]** Remove `mobile_scanner`.
+2.  **[DONE]** Add `camera` and `google_mlkit_barcode_scanning` to `pubspec.yaml`.
+3.  **[DONE]** Restructure `main.dart`:
+    - Initialize camera and pass it to `InspectionProvider`.
+    - Rewrite `InspectionProvider` to manage `CameraController` and a `Timer`.
+    - Implement the `_captureAndProcessImage` flow.
+    - Add logic to update the capture interval (`updateCaptureInterval`).
+4.  **[DONE]** Update the UI (`InspectionScreen`):
+    - Replace `MobileScanner` with `CameraPreview`.
+    - Add a button and dialog to configure the capture interval.
+    - Update control buttons to `startCapturing`/`stopCapturing`.
+    - Implement `WidgetsBindingObserver` for lifecycle management.
+5.  **[NEXT]** Test the new implementation thoroughly.
+6.  **[NEXT]** If successful, commit changes, build the APK, and create a new GitHub Release for v1.2.0.

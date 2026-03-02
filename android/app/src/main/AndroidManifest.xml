@@ -1,9 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.VIBRATE" />
     <application
-        android:label="Barcode Scanner"
+        android:label="barcode_helper"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
